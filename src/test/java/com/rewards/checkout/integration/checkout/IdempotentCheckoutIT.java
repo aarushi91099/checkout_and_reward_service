@@ -12,6 +12,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -83,5 +84,53 @@ class IdempotentCheckoutIT extends AbstractIntegrationTest {
         }
 
         assertThat(jdbcTemplate.queryForObject("select count(*) from orders", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void oneThousandConcurrentRequestsWithSameIdempotencyKeyStillCreateOnlyOneOrder() throws Exception {
+        int concurrency = 1000;
+        UUID productId = seedProduct("Widget", "12.00", 5);
+        UUID cartId = createCart();
+        addItem(cartId, productId, 1);
+        String idempotencyKey = "key-" + UUID.randomUUID();
+
+        CountDownLatch ready = new CountDownLatch(concurrency);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        try {
+            List<Future<ResponseEntity<String>>> futures = IntStream.range(0, concurrency)
+                    .mapToObj(i -> executor.<ResponseEntity<String>>submit(() -> {
+                        ready.countDown();
+                        start.await(10, TimeUnit.SECONDS);
+                        return checkout(cartId, idempotencyKey, null);
+                    }))
+                    .collect(Collectors.toList());
+
+            ready.await(10, TimeUnit.SECONDS);
+            start.countDown();
+
+            List<ResponseEntity<String>> responses = futures.stream()
+                    .map(f -> {
+                        try {
+                            return f.get(60, TimeUnit.SECONDS);
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    })
+                    .collect(Collectors.toList());
+
+            for (ResponseEntity<String> response : responses) {
+                assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+            }
+            String firstOrderId = readJson(responses.get(0)).get("id").asText();
+            for (ResponseEntity<String> response : responses) {
+                assertThat(readJson(response).get("id").asText()).isEqualTo(firstOrderId);
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertThat(jdbcTemplate.queryForObject("select count(*) from orders", Integer.class)).isEqualTo(1);
+        assertThat(productRepository.findById(productId).orElseThrow().getInventory()).isEqualTo(4);
     }
 }
