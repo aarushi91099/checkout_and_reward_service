@@ -1,0 +1,22 @@
+spring:
+  application:
+    name: checkout-reward-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/checkout_reward
+    username: checkout
+    password: checkout
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+reward:
+  every-nth-order: 5
+  discount-percent: 10
